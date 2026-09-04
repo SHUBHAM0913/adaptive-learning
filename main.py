@@ -7,6 +7,13 @@ Endpoints:
   POST /api/assessments/submit        full five-engine assessment pipeline
   GET  /api/curriculum                concepts + prerequisite edges (graph view)
   GET  /api/students/{id}/mastery     heatmap data for every concept
+
+Question-bank ingestion (bulk-load more questions from anywhere, e.g. the
+169Pi/exambench Hugging Face dataset via hf_import.py):
+
+  POST /api/questions                add one MCQ question
+  POST /api/questions/batch          add many MCQs (duplicates skipped or replaced)
+  GET  /api/questions                list the question bank (optionally by concept)
 """
 
 import json
@@ -34,6 +41,7 @@ from models import (
     StudentAttemptItem,
 )
 from pipeline import process_responses, refresh_forgetting_risk
+import question_bank
 
 app = FastAPI(
     title="Adaptive Learning Platform",
@@ -78,9 +86,28 @@ class AssessmentSubmit(BaseModel):
     responses: list[ResponseItem]
 
 
+class QuestionBatch(BaseModel):
+    questions: list[question_bank.QuestionCreate]
+    replace: bool = False  # overwrite existing question_ids instead of skipping
+
+
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+
+
+def _question_payload(q: Question) -> dict:
+    return {
+        "question_id": q.question_id,
+        "concept_id": q.concept_id,
+        "question_text": q.question_text,
+        "options": json.loads(q.options),
+        "correct_answer": q.correct_answer,
+        "difficulty": q.difficulty,
+        "discrimination": q.discrimination,
+        "estimated_time_seconds": q.estimated_time_seconds,
+        "distractor_explanations": json.loads(q.distractor_explanations or "{}"),
+    }
 
 
 def _get_student_or_404(db, student_id: str) -> Student:
@@ -159,6 +186,8 @@ def _mastery_overview(db, student_id: str) -> dict:
                 "forgetting_risk": round((r.forgetting_risk if r else 0.0), 3),
                 "attempts_count": (r.attempts_count if r else 0),
                 "exam_relevance": c.exam_relevance,
+                "difficulty_weight": c.difficulty_weight,
+                "estimated_minutes": c.estimated_minutes,
             }
         )
     rows.sort(key=lambda x: x["concept_id"])
@@ -184,6 +213,9 @@ def root():
             "submit": "POST /api/assessments/submit",
             "curriculum": "GET /api/curriculum",
             "mastery": "GET /api/students/{id}/mastery",
+            "questions": "POST /api/questions",
+            "questions_batch": "POST /api/questions/batch",
+            "question_list": "GET /api/questions",
         },
     }
 
@@ -333,6 +365,45 @@ def mastery(student_id: str, db=Depends(get_db)):
 # --------------------------------------------------------------------------
 # Static frontend
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Question bank (ingest more questions)
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/questions", status_code=201)
+def add_question(body: question_bank.QuestionCreate, db=Depends(get_db)):
+    result = question_bank.add_questions(db, [body])
+    outcome = result["results"][0]
+    if outcome["status"] == "error":
+        raise HTTPException(status_code=422, detail=outcome["error"])
+    if outcome["status"] == "skipped":
+        raise HTTPException(
+            status_code=409,
+            detail=f"A question with ID '{outcome['question_id']}' already exists "
+            "(use /api/questions/batch with replace=true to overwrite)",
+        )
+    row = db.query(Question).filter_by(question_id=outcome["question_id"]).first()
+    return _question_payload(row)
+
+
+@app.post("/api/questions/batch")
+def add_questions_batch(body: QuestionBatch, db=Depends(get_db)):
+    if not body.questions:
+        raise HTTPException(status_code=422, detail="No questions supplied")
+    return question_bank.add_questions(db, body.questions, replace=body.replace)
+
+
+@app.get("/api/questions")
+def list_questions(concept_id: str = None, db=Depends(get_db)):
+    query = db.query(Question)
+    if concept_id:
+        if db.query(Concept).filter_by(concept_id=concept_id).first() is None:
+            raise HTTPException(status_code=404, detail="Concept not found")
+        query = query.filter_by(concept_id=concept_id)
+    rows = query.order_by(Question.question_id).all()
+    return {"count": len(rows), "questions": [_question_payload(r) for r in rows]}
+
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

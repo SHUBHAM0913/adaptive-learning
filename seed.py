@@ -508,9 +508,9 @@ DEMO_HISTORY = {
     "c05": [(True, 55), (False, 80), (True, 48), (True, 60), (False, 25)],
     "c06": [(True, 40), (True, 45), (True, 55), (False, 70), (True, 42)],
     "c07": [(True, 50), (False, 70), (False, 20), (True, 55), (False, 75)],  # weak -> broken-chain demo
-    "c08": [(True, 45), (True, 50), (False, 30), (True, 48)],
-    "c09": [(True, 50), (False, 60), (True, 45), (True, 55)],
-    "c10": [(True, 45), (True, 58), (False, 75), (True, 42)],
+    "c08": [(False, 45), (True, 50), (False, 30), (True, 48)],  # in progress -> keeps the recommended list alive
+    "c09": [(True, 50), (False, 60), (True, 45), (False, 55)],
+    "c10": [(True, 45), (False, 58), (False, 75), (True, 42)],
     "c11": [(True, 40), (True, 52), (True, 48), (False, 65)],
     "c13": [(False, 30), (True, 48), (True, 52), (True, 44)],
     "c15": [(True, 55), (False, 60), (True, 50), (True, 58)],
