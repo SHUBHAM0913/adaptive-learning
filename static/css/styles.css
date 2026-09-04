@@ -318,3 +318,121 @@ section.block { margin-top: 28px; }
   .quiz-card { padding: 18px; }
   .onboard h1 { font-size: 27px; }
 }
+
+/* ── Question bank (admin) ──────────────────────────────────────────── */
+[hidden] { display: none !important; }
+
+.qbank-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 12px; margin: 24px 0 4px; flex-wrap: wrap;
+}
+.qbank-head h1 { font-size: 24px; letter-spacing: -0.5px; }
+.qbank-head .sub { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+
+.qbank-toolbar {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin: 14px 0 14px;
+}
+.qbank-toolbar select {
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+  font: inherit; font-size: 14px; background: var(--surface); color: var(--text);
+}
+.qbank-toolbar select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+.panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 14px;
+}
+.panel h3 { font-size: 13px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.4px; }
+
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > label { font-size: 11.5px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.4px; }
+.field input[type="text"], .field input[type="number"], .field textarea, .field select {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  font: inherit; font-size: 14px; background: var(--surface); color: var(--text);
+}
+.field textarea { resize: vertical; min-height: 60px; }
+.field input:focus, .field textarea:focus, .field select:focus {
+  outline: 2px solid var(--accent-soft); border-color: var(--accent);
+}
+
+.qm-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.qm-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 720px) {
+  .qm-grid2, .qm-grid4 { grid-template-columns: 1fr 1fr; }
+}
+
+/* add-form option rows */
+.opt-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.opt-row input[type="text"] {
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
+  font: inherit; font-size: 13.5px; background: var(--surface);
+}
+.opt-row .opt-text { flex: 1.4; min-width: 0; }
+.opt-row .opt-note { flex: 1; min-width: 0; color: var(--text-2); }
+.mark {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface-2); font-weight: 800; font-size: 13px; color: var(--text-3);
+  transition: all 0.1s ease;
+}
+.mark.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.4);
+}
+
+/* status / summary message */
+.qm-msg {
+  display: none; margin-top: 12px; border-radius: 10px; padding: 10px 13px;
+  font-size: 13px; white-space: pre-line; line-height: 1.5;
+}
+.qm-msg.show { display: block; }
+.qm-msg.ok { background: var(--green-soft); border: 1px solid #bfe3c8; color: var(--green); }
+.qm-msg.err { background: var(--red-soft); border: 1px solid #f3c1c1; color: var(--red); }
+.qm-check {
+  display: flex; gap: 7px; align-items: center; margin-top: 10px;
+  font-size: 13px; color: var(--text-2); cursor: pointer;
+}
+
+/* question cards */
+.qm-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 10px; overflow: hidden;
+}
+.qm-main { display: flex; gap: 12px; padding: 14px 16px; cursor: pointer; align-items: flex-start; }
+.qm-main:hover .qm-caret { color: var(--accent); }
+.qm-caret {
+  flex: 0 0 auto; color: var(--text-3); font-size: 13px; margin-top: 3px;
+  transition: transform 0.15s ease;
+}
+.qm-card.open .qm-caret { transform: rotate(90deg); }
+.qm-body { flex: 1; min-width: 0; }
+.qm-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.qm-id {
+  font-family: ui-monospace, Consolas, "Cascadia Mono", monospace; font-size: 11px;
+  color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border);
+  padding: 2px 7px; border-radius: 6px;
+}
+.qm-qtext { margin-top: 6px; font-size: 14.5px; font-weight: 650; line-height: 1.45; }
+.qm-meta { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+
+.qm-detail { display: none; border-top: 1px dashed var(--border); margin: 0 16px; }
+.qm-card.open .qm-detail { display: block; }
+.qm-detail-inner { padding: 12px 0 14px; }
+.qm-opt {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 8px 11px; border: 1px solid var(--border); border-radius: 9px;
+  margin-top: 6px; font-size: 13.5px; background: var(--surface-2);
+}
+.qm-opt .key {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 7px; background: #fff;
+  border: 1px solid var(--border); display: grid; place-items: center;
+  font-weight: 800; font-size: 12.5px; color: var(--text-2);
+}
+.qm-opt.correct { background: var(--green-soft); border-color: #bfe3c8; }
+.qm-opt.correct .key { background: var(--green); color: #fff; border-color: var(--green); }
+.qm-opt-text { flex: 1; min-width: 0; }
+.qm-ok { font-size: 10.5px; font-weight: 800; letter-spacing: 0.3px; text-transform: uppercase; color: var(--green); }
+.qm-note { font-size: 12px; color: var(--text-3); margin-left: auto; max-width: 52%; text-align: right; }
+@media (max-width: 720px) {
+  .qm-note { max-width: 100%; margin-left: 0; text-align: left; width: 100%; }
+}

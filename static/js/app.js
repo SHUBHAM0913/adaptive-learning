@@ -101,6 +101,7 @@ function route() {
   if (m) return renderQuiz(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
   if (path === "/graph") return renderGraph();
   if (path === "/results") return renderResults();
+  if (path === "/questions") return renderQuestionBank();
   renderOnboarding();
 }
 
@@ -157,9 +158,11 @@ async function renderDashboard() {
   if (!me) return renderOnboarding();
   appEl.innerHTML = renderTopbar(`
     <div class="student-chip"><span class="dot"></span>${esc(me.name)}</div>
+    <button class="btn btn-ghost" id="nav-bank">Question bank</button>
     <button class="btn btn-ghost" id="nav-graph">Concept map</button>
     <button class="btn btn-ghost" id="nav-logout">Switch student</button>
   `);
+  $("#nav-bank").addEventListener("click", () => navigate("/questions"));
   $("#nav-graph").addEventListener("click", () => navigate("/graph"));
   $("#nav-logout").addEventListener("click", () => { store.clear(); navigate("/"); });
 
@@ -530,8 +533,10 @@ async function renderGraph() {
   if (!me) return renderOnboarding();
   appEl.innerHTML = renderTopbar(`
     <button class="btn btn-ghost" data-nav-back>← Back to plan</button>
+    <button class="btn btn-ghost" id="nav-bank">Question bank</button>
   `);
   $("[data-nav-back]").addEventListener("click", () => navigate("/"));
+  $("#nav-bank").addEventListener("click", () => navigate("/questions"));
   appEl.insertAdjacentHTML("beforeend", `<div class="loading">Laying out the knowledge graph…</div>`);
 
   const [cur, dash] = await Promise.all([
@@ -651,6 +656,285 @@ async function renderGraph() {
     const svg = $("#graph-svg");
     svg.style.minWidth = "0";
     svg.setAttribute("width", Math.min(W, svg.parentElement.clientWidth - 10));
+  });
+}
+
+/* ── Question bank (admin) — browse and add more questions ────────────── */
+let qbCurriculum = null; // /api/curriculum payload (concept list)
+let qbFilter = "";      // "" = all concepts
+let qbCorrectIdx = 0;    // which option is marked correct in the add form
+const QB_VISIBLE_LIMIT = 200;
+
+function qbConceptName(id) {
+  const c = (qbCurriculum?.concepts || []).find((x) => x.concept_id === id);
+  return c ? c.name : id;
+}
+
+function qbConceptOptions(selected) {
+  return (qbCurriculum?.concepts || [])
+    .map((c) => `<option value="${esc(c.concept_id)}" ${c.concept_id === selected ? "selected" : ""}>${esc(c.name)}</option>`)
+    .join("");
+}
+
+function qbQuestionCard(q) {
+  const notes = q.distractor_explanations || {};
+  return `
+  <div class="qm-card">
+    <div class="qm-main">
+      <div class="qm-caret">▸</div>
+      <div class="qm-body">
+        <div class="qm-top">
+          <span class="chip chip-REVIEW">${esc(qbConceptName(q.concept_id))}</span>
+          <span class="qm-id">${esc(q.question_id)}</span>
+        </div>
+        <div class="qm-qtext">${esc(q.question_text)}</div>
+        <div class="qm-meta">difficulty ${q.difficulty.toFixed(2)} · ~${q.estimated_time_seconds}s · discrimination ${q.discrimination.toFixed(1)}</div>
+      </div>
+    </div>
+    <div class="qm-detail">
+      <div class="qm-detail-inner">
+        ${q.options.map((opt, i) => {
+          const letter = LETTERS[i];
+          const correct = letter === q.correct_answer;
+          const note = notes[letter];
+          return `
+        <div class="qm-opt ${correct ? "correct" : ""}">
+          <span class="key">${letter}</span>
+          <span class="qm-opt-text">${esc(opt)}</span>
+          ${correct ? `<span class="qm-ok">correct</span>` : ""}
+          ${note ? `<span class="qm-note">${esc(note)}</span>` : ""}
+        </div>`;
+        }).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function qbRefreshList(listEl, countEl) {
+  const data = await api(`/questions${qbFilter ? `?concept_id=${encodeURIComponent(qbFilter)}` : ""}`);
+  countEl.textContent = data.count ? `${data.count} question${data.count === 1 ? "" : "s"}` : "";
+  const shown = data.questions.slice(0, QB_VISIBLE_LIMIT);
+  if (!shown.length) {
+    listEl.innerHTML = `<div class="empty-state">No questions yet for this filter — add one with <b>＋ Add one question</b> above, or bulk-import from the exambench dataset with <b>hf_import.py</b>.</div>`;
+  } else {
+    listEl.innerHTML = shown.map(qbQuestionCard).join("") +
+      (data.questions.length > QB_VISIBLE_LIMIT
+        ? `<div class="mini" style="text-align:center;padding-top:8px">Showing the first ${QB_VISIBLE_LIMIT} — filter by concept or add server-side paging for more.</div>`
+        : "");
+  }
+  listEl.querySelectorAll(".qm-card").forEach((card) => {
+    card.querySelector(".qm-main").addEventListener("click", () => card.classList.toggle("open"));
+  });
+}
+
+function qbShowMsg(el, text, kind) {
+  el.textContent = text;
+  el.classList.add("show");
+  el.classList.toggle("ok", kind === "ok");
+  el.classList.toggle("err", kind === "err");
+}
+
+async function renderQuestionBank() {
+  try {
+    qbCurriculum = qbCurriculum || (await api("/curriculum"));
+  } catch {
+    qbCurriculum = { concepts: [] };
+  }
+
+  appEl.innerHTML = renderTopbar(`
+    <button class="btn btn-ghost" data-nav-back>← Back</button>
+  `);
+  $("[data-nav-back]").addEventListener("click", () => navigate("/"));
+
+  appEl.insertAdjacentHTML("beforeend", `
+  <div class="wrap">
+    <div class="qbank-head">
+      <div>
+        <h1>Question bank</h1>
+        <div class="sub">browse what students get asked · add more questions one at a time or as JSON</div>
+      </div>
+      <button class="btn btn-primary" id="qb-add-toggle">＋ Add one question</button>
+    </div>
+
+    <div class="qbank-toolbar">
+      <select id="qb-concept" aria-label="Filter by concept">
+        <option value="">All concepts</option>
+        ${qbConceptOptions("")}
+      </select>
+      <span class="mini" id="qb-count"></span>
+      <button class="btn btn-ghost" id="qb-bulk-toggle" style="margin-left:auto;">{ } Add many (JSON)</button>
+    </div>
+
+    <div class="panel" id="qb-add-panel" hidden>
+      <div class="qm-grid2">
+        <div class="field">
+          <label for="af-concept">Concept</label>
+          <select id="af-concept">${qbConceptOptions("")}</select>
+        </div>
+        <div class="field">
+          <label for="af-id">Question ID (optional)</label>
+          <input id="af-id" type="text" placeholder="auto-generated if empty">
+        </div>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label for="af-text">Question text</label>
+        <textarea id="af-text" rows="2" placeholder="Stem of the MCQ, self-contained…"></textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>Options — click the letter of the <b>correct</b> one</label>
+        <div id="af-options"></div>
+      </div>
+      <div class="qm-grid4" style="margin-top:12px;">
+        <div class="field">
+          <label for="af-diff">Difficulty (0–1)</label>
+          <input id="af-diff" type="number" min="0" max="1" step="0.05" value="0.5">
+        </div>
+        <div class="field">
+          <label for="af-secs">Est. seconds</label>
+          <input id="af-secs" type="number" min="10" step="5" value="60">
+        </div>
+      </div>
+      <div class="qm-msg" id="af-msg"></div>
+      <button class="btn btn-primary" id="af-submit" style="margin-top:12px;">Save question</button>
+    </div>
+
+    <div class="panel" id="qb-bulk-panel" hidden>
+      <h3>Bulk add — paste a JSON array</h3>
+      <div class="field" style="margin-top:8px;">
+        <textarea id="bf-json" rows="8" spellcheck="false" placeholder='[{"concept_id": "c02", "question_text": "…", "options": ["…", "…", "…", "…"], "correct_answer": "B", "distractor_explanations": {"A": "CALCULATION_ERROR: …"}}]'></textarea>
+      </div>
+      <div class="mini" style="margin-top:6px;">Required: <b>concept_id</b>, <b>question_text</b>, <b>options</b> (exactly 4), <b>correct_answer</b> (letter A–D). Optional: question_id, difficulty, discrimination, estimated_time_seconds, distractor_explanations (wrong letter → "TAG: note").</div>
+      <label class="qm-check"><input type="checkbox" id="bf-replace"> Replace existing question IDs instead of skipping</label>
+      <div class="qm-msg" id="bf-msg"></div>
+      <button class="btn btn-primary" id="bf-submit" style="margin-top:12px;">Add questions</button>
+    </div>
+
+    <div id="qb-list"></div>
+  </div>`);
+
+  const listEl = $("#qb-list");
+  const countEl = $("#qb-count");
+  const addPanel = $("#qb-add-panel");
+  const bulkPanel = $("#qb-bulk-panel");
+
+  $("#qb-add-toggle").addEventListener("click", () => {
+    bulkPanel.hidden = true;
+    addPanel.hidden = !addPanel.hidden;
+  });
+  $("#qb-bulk-toggle").addEventListener("click", () => {
+    addPanel.hidden = true;
+    bulkPanel.hidden = !bulkPanel.hidden;
+  });
+
+  // concept filter in the toolbar drives the server-side ?concept_id= param
+  $("#qb-concept").addEventListener("change", (e) => {
+    qbFilter = e.target.value;
+    qbRefreshList(listEl, countEl).catch((err) => {
+      listEl.innerHTML = `<div class="empty-state">${esc(err.message)}</div>`;
+    });
+  });
+
+  // ── add-one form ────────────────────────────────────────────────────
+  function paintCorrect() {
+    document.querySelectorAll(".mark").forEach((m, i) => {
+      m.classList.toggle("active", i === qbCorrectIdx);
+      m.setAttribute("aria-pressed", String(i === qbCorrectIdx));
+    });
+  }
+  $("#af-options").innerHTML = LETTERS.map((letter, i) => `
+    <div class="opt-row">
+      <button type="button" class="mark" data-idx="${i}" aria-pressed="false" title="mark as correct">${letter}</button>
+      <input class="opt-text" type="text" data-idx="${i}" placeholder="Option ${letter} text">
+      <input class="opt-note" type="text" data-idx="${i}" placeholder="why a wrong pick happens (optional)">
+    </div>`).join("");
+  paintCorrect();
+  $("#af-options").addEventListener("click", (e) => {
+    const m = e.target.closest(".mark");
+    if (!m) return;
+    qbCorrectIdx = Number(m.dataset.idx);
+    paintCorrect();
+  });
+
+  $("#af-submit").addEventListener("click", async () => {
+    const msg = $("#af-msg");
+    const texts = [...document.querySelectorAll(".opt-text")].map((i) => i.value.trim());
+    if (texts.some((t) => !t)) return qbShowMsg(msg, "All four options must be filled in.", "err");
+    if (new Set(texts).size !== 4) return qbShowMsg(msg, "The four options must be distinct.", "err");
+    const question_text = $("#af-text").value.trim();
+    if (!question_text) return qbShowMsg(msg, "Question text is required.", "err");
+
+    const distractor_explanations = {};
+    document.querySelectorAll(".opt-note").forEach((n, i) => {
+      if (i !== qbCorrectIdx && n.value.trim()) {
+        distractor_explanations[LETTERS[i]] = n.value.trim();
+      }
+    });
+    const payload = {
+      concept_id: $("#af-concept").value,
+      question_text,
+      options: texts,
+      correct_answer: LETTERS[qbCorrectIdx],
+      difficulty: Math.min(1, Math.max(0, Number($("#af-diff").value) || 0.5)),
+      estimated_time_seconds: Math.max(10, Number($("#af-secs").value) || 60),
+    };
+    const id = $("#af-id").value.trim();
+    if (id) payload.question_id = id;
+    if (Object.keys(distractor_explanations).length) payload.distractor_explanations = distractor_explanations;
+
+    const btn = $("#af-submit");
+    btn.disabled = true;
+    try {
+      const saved = await api("/questions", { method: "POST", body: JSON.stringify(payload) });
+      qbShowMsg(msg, `Saved ${saved.question_id}.`, "ok");
+      $("#af-id").value = "";
+      $("#af-text").value = "";
+      document.querySelectorAll(".opt-text").forEach((i) => (i.value = ""));
+      document.querySelectorAll(".opt-note").forEach((i) => (i.value = ""));
+      await qbRefreshList(listEl, countEl);
+    } catch (err) {
+      qbShowMsg(msg, err.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ── bulk JSON ───────────────────────────────────────────────────────
+  $("#bf-submit").addEventListener("click", async () => {
+    const msg = $("#bf-msg");
+    let parsed;
+    try {
+      parsed = JSON.parse($("#bf-json").value);
+    } catch {
+      return qbShowMsg(msg, "That is not valid JSON — check the brackets and quotes.", "err");
+    }
+    const questions = Array.isArray(parsed) ? parsed : [parsed];
+    if (!questions.length) return qbShowMsg(msg, "The array is empty.", "err");
+
+    const btn = $("#bf-submit");
+    btn.disabled = true;
+    try {
+      const res = await api("/questions/batch", {
+        method: "POST",
+        body: JSON.stringify({ questions, replace: $("#bf-replace").checked }),
+      });
+      const errors = res.results.filter((r) => r.status === "error").slice(0, 3)
+        .map((r) => `row ${r.index + 1}: ${r.error}`);
+      const lines = [
+        `${res.inserted} inserted · ${res.updated} updated · ${res.skipped} duplicates skipped · ${res.errors} errors`,
+        ...errors,
+      ];
+      qbShowMsg(msg, lines.join("\n"), res.errors ? "err" : "ok");
+      await qbRefreshList(listEl, countEl);
+    } catch (err) {
+      qbShowMsg(msg, err.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // initial list
+  qbRefreshList(listEl, countEl).catch((err) => {
+    listEl.innerHTML = `<div class="empty-state">${esc(err.message)}</div>`;
   });
 }
 
