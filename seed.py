@@ -9,11 +9,14 @@ from datetime import datetime, timedelta, timezone
 
 from database import Base, engine, SessionLocal
 from models import (
+    Assignment,
+    AttendanceRecord,
     Concept,
     Prerequisite,
     Question,
     Student,
     StudentAttemptItem,
+    SubjectSchedule,
 )
 
 
@@ -561,10 +564,77 @@ def seed(create_demo: bool = True):
                 db.add(q)
             db.commit()
 
-        if create_demo and db.query(Student).filter_by(student_id="demo").first() is None:
-            _seed_demo_student(db)
+        if create_demo:
+            if db.query(Student).filter_by(student_id="demo").first() is None:
+                _seed_demo_student(db)
+            _seed_demo_assignments_and_attendance(db)
     finally:
         db.close()
+
+
+def _seed_demo_assignments_and_attendance(db):
+    """Idempotent: demo student's assignments + per-subject class schedule."""
+    if db.query(SubjectSchedule).filter_by(student_id="demo").first() is None:
+        schedule = {
+            "Mechanics": 8,
+            "Kinematics": 10,
+            "Dynamics": 12,
+            "Work and Energy": 10,
+            "Momentum": 8,
+            "Rotational": 6,
+            "Gravitation": 6,
+        }
+        done = {"Mechanics": 5, "Kinematics": 7, "Dynamics": 6, "Work and Energy": 8, "Momentum": 3, "Rotational": 4, "Gravitation": 2}
+        absent = {"Mechanics": 1, "Dynamics": 1, "Work and Energy": 1}
+        now = datetime.now(timezone.utc)
+        for subject, total in schedule.items():
+            d = done.get(subject, 0)
+            db.add(SubjectSchedule(student_id="demo", subject=subject, total_classes=total, classes_done=d))
+            for i in range(1, d + 1):
+                status = "ABSENT" if i in {1, d} and subject in absent else "PRESENT"
+                db.add(
+                    AttendanceRecord(
+                        student_id="demo",
+                        subject=subject,
+                        class_number=i,
+                        status=status,
+                        class_date=now - timedelta(days=30 - i),
+                    )
+                )
+
+    if db.query(Assignment).filter_by(student_id="demo").first() is None:
+        db.add_all(
+            [
+                Assignment(
+                    assignment_id="as_demo_01",
+                    student_id="demo",
+                    title="Problem set: Newton's laws",
+                    subject="Dynamics",
+                    description="Solve 12 problems covering F = ma, action–reaction pairs and free body diagrams. Show your working.",
+                    due_date=(datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d"),
+                    status="open",
+                ),
+                Assignment(
+                    assignment_id="as_demo_02",
+                    student_id="demo",
+                    title="Energy worksheet: KE, PE and conservation",
+                    subject="Work and Energy",
+                    description="Complete the 10-question worksheet and note where energy converts between forms.",
+                    due_date=(datetime.now(timezone.utc) + timedelta(days=5)).strftime("%Y-%m-%d"),
+                    status="open",
+                ),
+                Assignment(
+                    assignment_id="as_demo_03",
+                    student_id="demo",
+                    title="Vectors recap sheet",
+                    subject="Mechanics",
+                    description="Head-to-tail addition, components and displacement practice.",
+                    due_date=(datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"),
+                    status="done",
+                ),
+            ]
+        )
+    db.commit()
 
 
 def _seed_demo_student(db):

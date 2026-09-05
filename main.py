@@ -31,6 +31,8 @@ from engines.graph import CurriculumGraph, PrerequisiteResolver
 from engines.priority import PriorityEngine
 from engines.roadmap import RoadmapGenerator
 from models import (
+    Assignment,
+    AttendanceRecord,
     Concept,
     Prerequisite,
     Question,
@@ -39,9 +41,13 @@ from models import (
     Student,
     StudentConceptMastery,
     StudentAttemptItem,
+    SubjectSchedule,
 )
 from pipeline import process_responses, refresh_forgetting_risk
 import question_bank
+
+# make sure new tables exist even if the DB was seeded before they were added
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Adaptive Learning Platform",
@@ -89,6 +95,24 @@ class AssessmentSubmit(BaseModel):
 class QuestionBatch(BaseModel):
     questions: list[question_bank.QuestionCreate]
     replace: bool = False  # overwrite existing question_ids instead of skipping
+
+
+class AssignmentCreate(BaseModel):
+    student_id: str
+    title: str
+    subject: str = "General"
+    description: str = ""
+    due_date: str | None = None  # YYYY-MM-DD
+
+
+class AssignmentStatus(BaseModel):
+    status: str  # open | done
+
+
+class AttendanceMark(BaseModel):
+    subject: str
+    status: str = "PRESENT"  # PRESENT | ABSENT
+    total_classes: int | None = None  # optionally re-plan the subject's total
 
 
 # --------------------------------------------------------------------------
@@ -196,28 +220,113 @@ def _mastery_overview(db, student_id: str) -> dict:
     return {"concepts": rows, "mastered_count": mastered, "forgetting_alerts": forgetting}
 
 
+def _subjects_overview(db, student_id: str) -> dict:
+    """Group mastery rows by subject (topic_id) with per-subject aggregates."""
+    overview = _mastery_overview(db, student_id)
+    by_topic: dict[str, list] = {}
+    for c in overview["concepts"]:
+        by_topic.setdefault(c["topic_id"] or "General", []).append(c)
+
+    subjects = []
+    for topic, cs in sorted(by_topic.items()):
+        mastered = sum(1 for c in cs if c["mastery"] >= 0.70)
+        attempted = sum(1 for c in cs if c["attempts_count"] > 0)
+        avg = sum(c["mastery"] for c in cs) / len(cs)
+        minutes = sum((c["attempts_count"] / 5) * (c["estimated_minutes"] or 30) for c in cs)
+        subjects.append(
+            {
+                "subject": topic,
+                "concepts": cs,
+                "concept_count": len(cs),
+                "mastered_count": mastered,
+                "attempted_count": attempted,
+                "avg_mastery": round(avg, 3),
+                "study_minutes": round(minutes),
+                "forgetting_alerts": [
+                    c for c in cs if c["forgetting_risk"] > 0.35 and c["attempts_count"] > 0
+                ],
+            }
+        )
+    subjects.sort(key=lambda s: s["avg_mastery"])  # weakest subject first
+    return {"subjects": subjects}
+
+
+def _assignment_payload(a: Assignment) -> dict:
+    return {
+        "assignment_id": a.assignment_id,
+        "student_id": a.student_id,
+        "title": a.title,
+        "subject": a.subject,
+        "description": a.description,
+        "due_date": a.due_date,
+        "status": a.status,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+def _attendance_summary(db, student_id: str) -> dict:
+    schedules = {s.subject: s for s in db.query(SubjectSchedule).filter_by(student_id=student_id).all()}
+    records = db.query(AttendanceRecord).filter_by(student_id=student_id).order_by(AttendanceRecord.class_number).all()
+
+    by_subject: dict[str, dict] = {}
+    for subj, s in schedules.items():
+        by_subject[subj] = {
+            "subject": subj,
+            "total_classes": s.total_classes,
+            "classes_done": s.classes_done,
+            "present": 0,
+            "absent": 0,
+        }
+    for r in records:
+        row = by_subject.setdefault(
+            r.subject,
+            {"subject": r.subject, "total_classes": 12, "classes_done": 0, "present": 0, "absent": 0},
+        )
+        if r.status == "PRESENT":
+            row["present"] += 1
+        else:
+            row["absent"] += 1
+
+    rows = []
+    total_classes = total_done = 0
+    for subj in sorted(by_subject):
+        row = by_subject[subj]
+        done = min(row["classes_done"], row["total_classes"])
+        left = max(0, row["total_classes"] - done)
+        rate = round(100 * row["present"] / done, 1) if done else 0.0
+        rows.append(
+            {
+                "subject": subj,
+                "total_classes": row["total_classes"],
+                "classes_done": done,
+                "classes_left": left,
+                "present": row["present"],
+                "absent": row["absent"],
+                "attendance_rate": rate,
+            }
+        )
+        total_classes += row["total_classes"]
+        total_done += done
+
+    return {
+        "subjects": rows,
+        "summary": {
+            "total_classes": total_classes,
+            "classes_done": total_done,
+            "classes_left": max(0, total_classes - total_done),
+        },
+    }
+
+
 # --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def root():
-    return {
-        "message": "Adaptive Learning Platform",
-        "docs": "/api/docs",
-        "endpoints": {
-            "students": "POST /api/students",
-            "dashboard": "GET /api/students/{id}/dashboard",
-            "quiz": "GET /api/students/{id}/quiz/{concept_id}",
-            "submit": "POST /api/assessments/submit",
-            "curriculum": "GET /api/curriculum",
-            "mastery": "GET /api/students/{id}/mastery",
-            "questions": "POST /api/questions",
-            "questions_batch": "POST /api/questions/batch",
-            "question_list": "GET /api/questions",
-        },
-    }
+    """Serve the app shell at the base URL (API listing lives in /api/docs)."""
+    return FileResponse("static/index.html")
 
 
 @app.post("/api/students", status_code=201)
@@ -362,6 +471,104 @@ def mastery(student_id: str, db=Depends(get_db)):
     return _mastery_overview(db, student_id)
 
 
+@app.get("/api/students/{student_id}/subjects")
+def subjects(student_id: str, db=Depends(get_db)):
+    _get_student_or_404(db, student_id)
+    refresh_forgetting_risk(db, student_id)
+    return _subjects_overview(db, student_id)
+
+
+# --------------------------------------------------------------------------
+# Assignments (give / list / mark done)
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/students/{student_id}/assignments")
+def list_assignments(student_id: str, db=Depends(get_db)):
+    _get_student_or_404(db, student_id)
+    rows = (
+        db.query(Assignment)
+        .filter_by(student_id=student_id)
+        .order_by(Assignment.created_at.desc())
+        .all()
+    )
+    return {"assignments": [_assignment_payload(a) for a in rows]}
+
+
+@app.post("/api/assignments", status_code=201)
+def create_assignment(body: AssignmentCreate, db=Depends(get_db)):
+    _get_student_or_404(db, body.student_id)
+    if not body.title.strip():
+        raise HTTPException(status_code=422, detail="Assignment title is required")
+    row = Assignment(
+        assignment_id=f"as_{uuid.uuid4().hex[:10]}",
+        student_id=body.student_id,
+        title=body.title.strip(),
+        subject=body.subject.strip() or "General",
+        description=body.description.strip(),
+        due_date=body.due_date,
+        status="open",
+    )
+    db.add(row)
+    db.commit()
+    return _assignment_payload(row)
+
+
+@app.patch("/api/assignments/{assignment_id}")
+def update_assignment(assignment_id: str, body: AssignmentStatus, db=Depends(get_db)):
+    row = db.query(Assignment).filter_by(assignment_id=assignment_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if body.status not in ("open", "done"):
+        raise HTTPException(status_code=422, detail="status must be 'open' or 'done'")
+    row.status = body.status
+    db.commit()
+    return _assignment_payload(row)
+
+
+# --------------------------------------------------------------------------
+# Attendance (classes done vs. left, per subject)
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/students/{student_id}/attendance")
+def attendance(student_id: str, db=Depends(get_db)):
+    _get_student_or_404(db, student_id)
+    return _attendance_summary(db, student_id)
+
+
+@app.post("/api/students/{student_id}/attendance")
+def mark_attendance(student_id: str, body: AttendanceMark, db=Depends(get_db)):
+    _get_student_or_404(db, student_id)
+    if not body.subject.strip():
+        raise HTTPException(status_code=422, detail="subject is required")
+
+    schedule = db.query(SubjectSchedule).filter_by(student_id=student_id, subject=body.subject).first()
+    if schedule is None:
+        schedule = SubjectSchedule(student_id=student_id, subject=body.subject, total_classes=12, classes_done=0)
+        db.add(schedule)
+    if body.total_classes is not None:
+        if body.total_classes < schedule.classes_done:
+            raise HTTPException(status_code=422, detail="total_classes cannot be less than classes already done")
+        schedule.total_classes = body.total_classes
+
+    if schedule.classes_done >= schedule.total_classes:
+        db.commit()
+        raise HTTPException(status_code=409, detail="All classes for this subject are done — raise the total first")
+
+    schedule.classes_done += 1
+    db.add(
+        AttendanceRecord(
+            student_id=student_id,
+            subject=body.subject,
+            class_number=schedule.classes_done,
+            status=body.status if body.status in ("PRESENT", "ABSENT") else "PRESENT",
+        )
+    )
+    db.commit()
+    return _attendance_summary(db, student_id)
+
+
 # --------------------------------------------------------------------------
 # Static frontend
 # --------------------------------------------------------------------------
@@ -411,6 +618,16 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/app", include_in_schema=False)
 @app.get("/app/{path:path}", include_in_schema=False)
 def spa(path: str = ""):
+    return FileResponse("static/index.html")
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def spa_fallback(path: str):
+    """Deep links into the SPA (e.g. /subjects, /plan, /quiz/c05/REVIEW) serve
+    the app shell; the frontend route() picks the page up. API/static are
+    matched earlier and never reach here."""
+    if path.startswith(("api/", "static/")):
+        raise HTTPException(status_code=404)
     return FileResponse("static/index.html")
 
 

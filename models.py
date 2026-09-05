@@ -139,3 +139,43 @@ class RoadmapAction(Base):
     estimated_minutes = Column(Integer, default=20)
     target_difficulty = Column(Float, default=0.5)
     is_completed = Column(Boolean, default=False)
+
+
+class Assignment(Base):
+    """A task given to a student (open / done)."""
+
+    __tablename__ = "assignments"
+
+    assignment_id = Column(String, primary_key=True)
+    student_id = Column(String, ForeignKey("students.student_id"))
+    title = Column(String, nullable=False)
+    subject = Column(String, default="General")
+    description = Column(Text, default="")
+    due_date = Column(String, nullable=True)  # YYYY-MM-DD
+    status = Column(String, default="open")  # open | done
+    created_at = Column(DateTime, default=utcnow)
+
+
+class SubjectSchedule(Base):
+    """How many classes each subject is expected to have (attendance plan)."""
+
+    __tablename__ = "subject_schedules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    student_id = Column(String, ForeignKey("students.student_id"))
+    subject = Column(String, nullable=False)
+    total_classes = Column(Integer, default=12)
+    classes_done = Column(Integer, default=0)
+
+
+class AttendanceRecord(Base):
+    """One held class (present/absent) for a subject."""
+
+    __tablename__ = "attendance_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    student_id = Column(String, ForeignKey("students.student_id"))
+    subject = Column(String, nullable=False)
+    class_number = Column(Integer, default=1)
+    status = Column(String, default="PRESENT")  # PRESENT | ABSENT
+    class_date = Column(DateTime, default=utcnow)
